@@ -1,0 +1,5 @@
+pip install nvidia-cudnn-cu11==8.6.0.163
+export LD_LIBRARY_PATH=$CONDA_PREFIX/lib/python3.10/site-packages/nvidia/cudnn/lib:$LD_LIBRARY_PATH
+cd $CONDA_PREFIX/lib
+ln -sf libcudnn.so.8 libcudnn.so
+python -c "import paddle; paddle.utils.run_check()"
