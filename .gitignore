@@ -169,3 +169,5 @@ model*.*
 .git
 __pycache__
 *.pdparams
+bbox.json
+*.json
