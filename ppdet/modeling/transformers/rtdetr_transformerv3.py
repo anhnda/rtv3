@@ -34,7 +34,7 @@ from .deformable_transformer import MSDeformableAttention
 from ..initializer import (linear_init_, constant_, xavier_uniform_, normal_,
                            bias_init_with_prob)
 from .utils import (_get_clones, get_sine_pos_embed,
-                    get_contrastive_denoising_training_group, inverse_sigmoid)
+                    get_contrastive_denoising_training_group, inverse_sigmoid, get_k_tensor_constrained, hash_v)
 
 __all__ = ['RTDETRTransformerv3']
 
@@ -219,13 +219,22 @@ class TransformerDecoder(nn.Layer):
                 query_pos_head,
                 attn_mask=None,
                 memory_mask=None,
-                query_pos_head_inv_sig=False):
+                query_pos_head_inv_sig=False,
+                sub_seq_len=None):
+        if isinstance(sub_seq_len, list):
+            sub_seq_len = paddle.to_tensor(sub_seq_len, dtype='int64', place=target.place)
         output = tgt
         dec_out_bboxes = []
         dec_out_logits = []
         ref_points_detach = F.sigmoid(ref_points_unact)
         for i, layer in enumerate(self.layers):
+            sz = max(sub_seq_len)
+            sz = hash_v(sz)
+            sub_seq_o = sub_seq_len.clone()
+            ref_points_detach = ref_points_detach[:,:sz]
+            output = output[:,:sz]
             ref_points_input = ref_points_detach.unsqueeze(2)
+
             if not query_pos_head_inv_sig:
                 query_pos_embed = query_pos_head(ref_points_detach)
             else:
@@ -238,7 +247,16 @@ class TransformerDecoder(nn.Layer):
 
             inter_ref_bbox = F.sigmoid(bbox_head[i](output) + inverse_sigmoid(
                 ref_points_detach))
-
+            dec_out_logiti = score_head[i](output)
+            m_v = dec_out_logiti.max(-1)
+            sub_seq_len = get_k_tensor_constrained(m_v,offset=50, lag=40-i*8,sub_seq=sub_seq_len)
+            #sub_seq_len = [v.item() for v in sub_seq_len]
+            pass
+            if i == len(self.layers) - 1:
+                pass
+            else:
+                #sub_seq_len = torch.tensor([min(sub_seq_len[i]+90, sub_seq_o[i]) for i in range(len(sub_seq_len))], device=tgt.device)
+                sub_seq_len = paddle.minimum(sub_seq_len+90, sub_seq_o)
             if self.training:
                 dec_out_logits.append(score_head[i](output))
                 if i == 0:
@@ -256,7 +274,7 @@ class TransformerDecoder(nn.Layer):
             ref_points_detach = inter_ref_bbox.detach(
             ) if self.training else inter_ref_bbox
 
-        return paddle.stack(dec_out_bboxes), paddle.stack(dec_out_logits)
+        return paddle.stack(dec_out_bboxes), paddle.stack(dec_out_logits),sub_seq_len
 
 
 @register
@@ -513,6 +531,9 @@ class RTDETRTransformerv3(nn.Layer):
         target, init_ref_points_unact, enc_topk_bboxes, enc_topk_logits = \
             self._get_decoder_input(
                 memory, spatial_shapes, denoising_classes, denoising_bbox_unacts, is_teacher)
+        bs = target.shape[0]
+        q = target.shape[1]
+        sub_seq_len = paddle.full(shape=[bs], fill_value=q, dtype='int64')
 
         # multi group noise attention
         if self.training:
@@ -539,7 +560,7 @@ class RTDETRTransformerv3(nn.Layer):
             attn_masks = new_attn_mask
 
         # decoder
-        out_bboxes, out_logits = self.decoder(
+        out_bboxes, out_logits, sub_seq_len = self.decoder(
             target,
             init_ref_points_unact,
             memory,
@@ -550,9 +571,10 @@ class RTDETRTransformerv3(nn.Layer):
             self.query_pos_head,
             attn_mask=attn_masks,
             memory_mask=None,
-            query_pos_head_inv_sig=self.query_pos_head_inv_sig)
+            query_pos_head_inv_sig=self.query_pos_head_inv_sig,
+            sub_seq_len=sub_seq_len)
         return (out_bboxes, out_logits, enc_topk_bboxes, enc_topk_logits,
-                dn_metas)
+                dn_metas,sub_seq_len)
 
     def _generate_anchors(self,
                           spatial_shapes=None,

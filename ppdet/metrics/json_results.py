@@ -17,6 +17,7 @@ import numpy as np
 
 def get_det_res(bboxes,
                 bbox_nums,
+                sub_seq_len,
                 image_id,
                 label_to_cat_id_map,
                 bias=0,
@@ -30,6 +31,8 @@ def get_det_res(bboxes,
         for j in range(det_nums):
             dt = bboxes[k]
             k = k + 1
+            if j >= sub_seq_len[i]:
+                continue
             num_id, score, xmin, ymin, xmax, ymax = dt.tolist()
             if int(num_id) < 0 or score < save_threshold:
                 continue

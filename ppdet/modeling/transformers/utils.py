@@ -35,7 +35,99 @@ __all__ = [
     'deformable_attention_core_func', 'varifocal_loss_with_logits'
 ]
 
+import paddle
 
+def get_k_tensor_constrained(ar, sub_seq, offset=20, lag=10, alpha=1, beta=0.4, gamma=0.5):
+    """
+    Paddle version of get_k_tensor_constrained.
+    Inputs:
+        - ar: shape [B, N]
+        - sub_seq: shape [B]
+    Returns:
+        - Tensor of shape [B], optimal constrained k value for each sequence
+    """
+    batch_size, N = ar.shape
+    device = ar.place
+
+    k_end_global = N - offset - lag
+    k_end_per_seq = paddle.clip(sub_seq - lag, max=k_end_global)
+
+    max_possible_k = N - offset - lag
+    k_range = paddle.arange(offset, max_possible_k, dtype='int64')
+
+    # Create masks
+    k_range_expanded = k_range.unsqueeze(0)          # [1, K]
+    k_end_expanded = k_end_per_seq.unsqueeze(1)      # [B, 1]
+    valid_k_mask = k_range_expanded < k_end_expanded # [B, K]
+
+    num_k = k_range.shape[0]
+    ar_expanded = ar.unsqueeze(1)                    # [B, 1, N]
+    k_expanded = k_range.unsqueeze(0).unsqueeze(2)   # [1, K, 1]
+
+    indices = paddle.arange(N, dtype='int64').reshape([1, 1, N])  # [1, 1, N]
+    mask_A1 = indices < k_expanded                   # [B, K, N]
+    mask_A2 = indices >= (k_expanded + lag)          # [B, K, N]
+
+    mask_A1 = mask_A1.expand([batch_size, num_k, N])
+    mask_A2 = mask_A2.expand([batch_size, num_k, N])
+    ar_broadcast = ar_expanded.expand([batch_size, num_k, N])
+
+    A1_lengths = mask_A1.astype('int64').sum(axis=2, keepdim=True)  # [B, K, 1]
+    x_coords = paddle.arange(N, dtype='float32').reshape([1, 1, N]).expand([batch_size, num_k, N])
+
+    zeros_float = paddle.zeros_like(ar_broadcast)
+    A1_vals = paddle.where(mask_A1, ar_broadcast, zeros_float)
+    A1_x = paddle.where(mask_A1, x_coords, zeros_float)
+
+    k_start_vals = k_range.reshape([1, num_k]).astype('float32').expand([batch_size, num_k])
+    A1_x_adjusted = A1_x - k_start_vals.unsqueeze(2) * mask_A1.astype('float32')
+    A1_x_adjusted = paddle.where(mask_A1, A1_x_adjusted, zeros_float)
+
+    n = A1_lengths.squeeze(2).astype('float32')
+    sum_x = A1_x_adjusted.sum(axis=2)
+    sum_y = A1_vals.sum(axis=2)
+    sum_xy = (A1_x_adjusted * A1_vals).sum(axis=2)
+    sum_x2 = (A1_x_adjusted ** 2).sum(axis=2)
+
+    numerator = n * sum_xy - sum_x * sum_y
+    denominator = n * sum_x2 - sum_x ** 2
+
+    eps = paddle.full_like(denominator, 1e-10)
+    denominator = paddle.where(paddle.abs(denominator) < eps, eps, denominator)
+    slope_A1 = numerator / denominator
+
+    A1_counts = mask_A1.astype('float32').sum(axis=2)
+    A2_counts = mask_A2.astype('float32').sum(axis=2)
+
+    A1_mean = A1_vals.sum(axis=2) / paddle.clip(A1_counts, min=1)
+    A1_vals_centered = A1_vals - A1_mean.unsqueeze(2) * mask_A1.astype('float32')
+    A1_var = ((A1_vals_centered ** 2) * mask_A1.astype('float32')).sum(axis=2) / paddle.clip(A1_counts, min=1)
+
+    A2_vals = paddle.where(mask_A2, ar_broadcast, zeros_float)
+    A2_mean = A2_vals.sum(axis=2) / paddle.clip(A2_counts, min=1)
+    A2_vals_centered = A2_vals - A2_mean.unsqueeze(2) * mask_A2.astype('float32')
+    A2_var = ((A2_vals_centered ** 2) * mask_A2.astype('float32')).sum(axis=2) / paddle.clip(A2_counts, min=1)
+
+    scores = alpha * paddle.abs(slope_A1) + beta * A1_var - gamma * A2_var
+    neg_inf = paddle.full_like(scores, -1e10)
+    scores = paddle.where(valid_k_mask, scores, neg_inf)
+
+    best_indices = scores.argmax(axis=1)
+    best_k = paddle.gather(k_range, best_indices)
+
+    result = best_k + lag
+    result = paddle.minimum(result, sub_seq)
+
+    return result
+def hash_v(v):
+    thresholds = list(range(50, 301, 5))  # [15, 20, ..., 300]
+    best = thresholds[0]  # default to minimum
+    for t in thresholds:
+        if v >= t:
+            best = t
+        else:
+            break
+    return best
 def _get_clones(module, N):
     return nn.LayerList([copy.deepcopy(module) for _ in range(N)])
 

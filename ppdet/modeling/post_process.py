@@ -503,7 +503,7 @@ class DETRPostProcess(object):
             bbox_num (Tensor): The number of prediction boxes of each batch with
                 shape [bs], and is N.
         """
-        bboxes, logits, masks = head_out
+        bboxes, logits, sub_seq_len, masks = head_out
         if self.dual_queries:
             num_queries = logits.shape[1]
             logits, bboxes = logits[:, :int(num_queries // (self.dual_groups + 1)), :], \
@@ -582,7 +582,7 @@ class DETRPostProcess(object):
         bbox_num = paddle.to_tensor(
             self.num_top_queries, dtype='int32').tile([bbox_pred.shape[0]])
         bbox_pred = bbox_pred.reshape([-1, 6])
-        return bbox_pred, bbox_num, mask_pred
+        return bbox_pred, bbox_num, sub_seq_len, mask_pred
 
 
 @register

@@ -113,9 +113,9 @@ class RTDETRV3(BaseArch):
         else:
             preds = self.detr_head(out_transformer, body_feats)
             if self.exclude_post_process:
-                bbox, bbox_num, mask = preds
+                bbox, bbox_num, _, mask = preds
             else:
-                bbox, bbox_num, mask = self.post_process(
+                bbox, bbox_num, sub_seq_len, mask = self.post_process(
                     preds, self.inputs['im_shape'], self.inputs['scale_factor'],
                     self.inputs['image'][2:].shape)
 
@@ -123,7 +123,7 @@ class RTDETRV3(BaseArch):
                 # bbox, bbox_num, nms_keep_idx = self.aux_o2m_head.post_process(
                 #         aux_o2m_outs, self.inputs['scale_factor'])
 
-            output = {'bbox': bbox, 'bbox_num': bbox_num}
+            output = {'bbox': bbox, 'bbox_num': bbox_num, 'sub_seq_len' : sub_seq_len}
             if self.with_mask:
                 output['mask'] = mask
             return output

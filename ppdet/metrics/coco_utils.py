@@ -53,6 +53,7 @@ def get_infer_results(outs, catid, bias=0, save_threshold=0):
             infer_res['bbox'] = get_det_res(
                 outs['bbox'],
                 outs['bbox_num'],
+                outs['sub_seq_len'],
                 im_id,
                 catid,
                 bias=bias,
