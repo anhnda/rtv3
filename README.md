@@ -115,6 +115,8 @@ python tools/infer.py -c configs/rtdetrv3/rtdetrv3_r18vd_6x_coco.yml \
 python tools/export_model.py -c configs/rtdetrv3/rtdetrv3_r18vd_6x_coco.yml \
               -o weights=https://bj.bcebos.com/v1/paddledet/models/rtdetrv3_r18vd_6x_coco.pdparams trt=True \
               --output_dir=output_inference
+
+python tools/export_model.py -c configs/rtdetrv3/rtdetrv3_r50vd_6x_coco.yml -o weights=scheckpoint/rtdetrv3_r50vd_6x_coco.pdparams trt=True --output_dir=output_inference              
 ```
 
 </details>
@@ -137,6 +139,8 @@ paddle2onnx --model_dir=./output_inference/rtdetrv3_r18vd_6x_coco/ \
             --params_filename model.pdiparams \
             --opset_version 16 \
             --save_file rtdetrv3_r18vd_6x_coco.onnx
+
+paddle2onnx --model_dir=./output_inference/rtdetrv3_r50vd_6x_coco/ --model_filename model.pdmodel  --params_filename model.pdiparams --opset_version 16 --save_file rtdetrv3_r50vd_6x_coco.onnx            
 ```
 </details>
 
