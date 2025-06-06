@@ -170,5 +170,4 @@ model*.*
 __pycache__
 *.pdparams
 bbox.json
-*.json
 output_inference
