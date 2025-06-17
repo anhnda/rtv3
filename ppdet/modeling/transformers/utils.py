@@ -39,6 +39,84 @@ import paddle
 
 def get_k_tensor_constrained(ar, sub_seq, offset=20, lag=10, alpha=1, beta=0.4, gamma=0.5):
     """
+    Fully vectorized version - maximum performance but higher memory usage.
+    Use this if you have sufficient memory.
+    """
+    batch_size, N = ar.shape
+    
+    k_end_global = N - offset - lag
+    k_end_per_seq = paddle.clip(sub_seq - lag, max=k_end_global)
+    max_possible_k = N - offset - lag
+    k_range = paddle.arange(offset, max_possible_k, dtype='int64')
+    num_k = k_range.shape[0]
+    
+    if num_k == 0:
+        return paddle.full([batch_size], offset + lag, dtype='int64')
+    
+    # Create all masks at once - memory intensive but faster
+    indices = paddle.arange(N, dtype='int64').reshape([1, 1, N])  # [1, 1, N]
+    k_expanded = k_range.reshape([1, num_k, 1])  # [1, K, 1]
+    
+    mask_A1 = indices < k_expanded  # [1, K, N]
+    mask_A2 = indices >= (k_expanded + lag)  # [1, K, N]
+    
+    # Broadcast ar for all k values
+    ar_broadcast = ar.unsqueeze(1)  # [B, 1, N]
+    
+    # Compute A1 regions efficiently
+    A1_data = paddle.where(mask_A1, ar_broadcast, 0.0)  # [B, K, N]
+    A1_mask_float = mask_A1.astype('float32')
+    A1_lengths = A1_mask_float.sum(axis=2)  # [B, K]
+    
+    # Vectorized linear regression
+    x_coords = paddle.arange(N, dtype='float32').reshape([1, 1, N])
+    x_coords_adj = paddle.where(mask_A1, x_coords, 0.0)
+    
+    # Adjust x coordinates relative to k_start
+    k_start_adj = k_range.reshape([1, num_k, 1]).astype('float32')
+    x_coords_adj = paddle.where(mask_A1, x_coords - k_start_adj, 0.0)
+    
+    # Regression calculations
+    n = A1_lengths  # [B, K]
+    sum_x = x_coords_adj.sum(axis=2)  # [B, K]
+    sum_y = A1_data.sum(axis=2)  # [B, K]
+    sum_xy = (x_coords_adj * A1_data).sum(axis=2)  # [B, K]
+    sum_x2 = (x_coords_adj ** 2).sum(axis=2)  # [B, K]
+    
+    numerator = n * sum_xy - sum_x * sum_y
+    denominator = n * sum_x2 - sum_x ** 2
+    
+    slope_A1 = paddle.where(
+        paddle.abs(denominator) > 1e-10,
+        numerator / denominator,
+        paddle.zeros_like(numerator)
+    )
+    
+    # Compute variances
+    A1_mean = sum_y / paddle.clip(A1_lengths, min=1)  # [B, K]
+    A1_var = ((A1_data - A1_mean.unsqueeze(2) * A1_mask_float) ** 2 * A1_mask_float).sum(axis=2) / paddle.clip(A1_lengths, min=1)
+    
+    A2_data = paddle.where(mask_A2, ar_broadcast, 0.0)
+    A2_mask_float = mask_A2.astype('float32')
+    A2_lengths = A2_mask_float.sum(axis=2)
+    A2_mean = A2_data.sum(axis=2) / paddle.clip(A2_lengths, min=1)
+    A2_var = ((A2_data - A2_mean.unsqueeze(2) * A2_mask_float) ** 2 * A2_mask_float).sum(axis=2) / paddle.clip(A2_lengths, min=1)
+    
+    # Final scoring
+    scores = alpha * paddle.abs(slope_A1) + beta * A1_var - gamma * A2_var
+    
+    # Apply valid k mask
+    valid_k_mask = k_range.unsqueeze(0) < k_end_per_seq.unsqueeze(1)
+    scores = paddle.where(valid_k_mask, scores, paddle.full_like(scores, -1e10))
+    
+    # Get results
+    best_indices = scores.argmax(axis=1)
+    best_k = paddle.gather(k_range, best_indices)
+    result = paddle.minimum(best_k + lag, sub_seq)
+    
+    return result
+def get_k_tensor_constrained2(ar, sub_seq, offset=20, lag=10, alpha=1, beta=0.4, gamma=0.5):
+    """
     Paddle version of get_k_tensor_constrained.
     Inputs:
         - ar: shape [B, N]

@@ -86,15 +86,17 @@ class RTDETRV3(BaseArch):
 
     def _forward(self):
         # Backbone
+                    
         start_time = time.time()
 
         body_feats = self.backbone(self.inputs)
-        self.backbone_time += time.time() - start_time
-        start_time = time.time()
+
         # Neck
         if self.neck is not None:
             body_feats = self.neck(body_feats)
-
+        paddle.device.cuda.synchronize()
+        self.backbone_time += time.time() - start_time
+        start_time = time.time()
         # Transformer
         pad_mask = self.inputs.get('pad_mask', None)
         out_transformer = self.transformer(body_feats, pad_mask, self.inputs)

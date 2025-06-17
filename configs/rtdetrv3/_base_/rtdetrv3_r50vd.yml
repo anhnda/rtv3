@@ -60,9 +60,8 @@ RTDETRTransformerv3:
   num_noises: 0
   num_noise_queries: []
   num_noise_denoising: 100
-  learnt_init_query: False
 
-  infer_adapt: False
+  infer_adapt: True
   offset: 50
   lag: 40
   alpha: 1.0

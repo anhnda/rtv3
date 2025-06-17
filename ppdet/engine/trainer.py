@@ -716,7 +716,7 @@ class Trainer(object):
         print("Evalutating...")
         print("Infer Adapt:", self.model.transformer.decoder.infer_adapt)
         cc = -1
-        mx = 100000
+        mx = 10000
         total_forward_time = 0
         total_update_eval_time = 0
         for step_id, data in enumerate(loader):
@@ -726,6 +726,7 @@ class Trainer(object):
             self.status['step_id'] = step_id
             self._compose_callback.on_step_begin(self.status)
             # forward
+            paddle.device.cuda.synchronize()
             start_time = time.time()
             if self.use_amp:
                 with paddle.amp.auto_cast(
@@ -737,6 +738,7 @@ class Trainer(object):
                     outs = self.model(data)
             else:
                 outs = self.model(data)
+            paddle.device.cuda.synchronize()
             total_forward_time += time.time() - start_time
             # update metrics
             start_time = time.time()
@@ -770,9 +772,9 @@ class Trainer(object):
                 f"n_last_query: {n_last_query:d} \n"
                 f"avg: {n_query / n_call:.2f} \n"
                 f"avg_last: {n_last_query / n_call:.2f}")
-        print("Forward time: ", total_forward_time, total_forward_time/5000)
-        print("Backbone time: ", self.model.backbone_time)
-        print("Other forward time: ", self.model.other_time)
+        #print("Forward time: ", total_forward_time, total_forward_time/5000)
+        #print("Backbone time: ", self.model.backbone_time)
+        #print("Other forward time: ", self.model.other_time)
         print("Eval time: ", total_update_eval_time, total_update_eval_time/5000)
     def evaluate(self):
         # get distributed model

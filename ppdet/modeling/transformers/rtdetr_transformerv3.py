@@ -26,7 +26,7 @@ import paddle.nn as nn
 import paddle.nn.functional as F
 from paddle import ParamAttr
 from paddle.regularizer import L2Decay
-
+import time
 from ppdet.core.workspace import register
 from ..layers import MultiHeadAttention
 from ..heads.detr_head import MLP
@@ -232,7 +232,7 @@ class TransformerDecoder(nn.Layer):
                 sub_seq_len=None):
         if self.infer_adapt:
             if isinstance(sub_seq_len, list):
-                sub_seq_len = paddle.to_tensor(sub_seq_len, dtype='int64', place=target.place)
+                sub_seq_len = paddle.to_tensor(sub_seq_len, dtype='int64', place=tgt.place)
         else:
             sub_seq_len = None
         output = tgt
@@ -240,14 +240,17 @@ class TransformerDecoder(nn.Layer):
         dec_out_logits = []
         ref_points_detach = F.sigmoid(ref_points_unact)
         self.n_call += 1
+        sub_seq_x = paddle.to_tensor([200] * tgt.shape[0], dtype='int64', place=tgt.place)
         for i, layer in enumerate(self.layers):
             if self.infer_adapt:
+                # sz = 200
                 sz = max(sub_seq_len)
                 sz = hash_v(sz)
                 self.n_query += sz / len(self.layers)
                 sub_seq_o = sub_seq_len.clone()
                 ref_points_detach = ref_points_detach[:,:sz]
                 output = output[:,:sz]
+                pass
             ref_points_input = ref_points_detach.unsqueeze(2)
 
             if not query_pos_head_inv_sig:
@@ -262,18 +265,19 @@ class TransformerDecoder(nn.Layer):
 
             inter_ref_bbox = F.sigmoid(bbox_head[i](output) + inverse_sigmoid(
                 ref_points_detach))
+            dec_out_logiti = score_head[i](output)
+            m_v = dec_out_logiti.max(-1)
+
             if self.infer_adapt:
-                dec_out_logiti = score_head[i](output)
-                m_v = dec_out_logiti.max(-1)
+                # sub_seq_len = None
                 sub_seq_len = get_k_tensor_constrained(m_v,offset=self.offset, lag=self.lag-int(i*self.lag/5),alpha=self.alpha, beta = self.beta, gamma=self.gamma, sub_seq=sub_seq_len)
-                #sub_seq_len = [v.item() for v in sub_seq_len]
-            
+                #sub_seq_len = sub_seq_x            
                 if i == len(self.layers) - 1:
                     self.n_last_query += max(sub_seq_len)
-                    pass
+
                 else:
-                    #sub_seq_len = torch.tensor([min(sub_seq_len[i]+90, sub_seq_o[i]) for i in range(len(sub_seq_len))], device=tgt.device)
                     sub_seq_len = paddle.minimum(sub_seq_len+self.offset+self.lag, sub_seq_o)
+                    pass
             else:
                 sub_seq_len = None
             if self.training:
@@ -363,6 +367,7 @@ class RTDETRTransformerv3(nn.Layer):
         self.num_noises = num_noises
         self.num_noise_denoising = num_noise_denoising
         self.num_groups = 1
+        self.get_enc_time = 0
         if num_noises > 0:
             self.num_queries.extend(num_noise_queries)
             self.num_groups += num_noises
