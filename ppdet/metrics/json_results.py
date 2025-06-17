@@ -31,7 +31,7 @@ def get_det_res(bboxes,
         for j in range(det_nums):
             dt = bboxes[k]
             k = k + 1
-            if j >= sub_seq_len[i]:
+            if sub_seq_len is not None and j >= sub_seq_len[i]:
                 continue
             num_id, score, xmin, ymin, xmax, ymax = dt.tolist()
             if int(num_id) < 0 or score < save_threshold:

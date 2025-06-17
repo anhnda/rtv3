@@ -713,10 +713,20 @@ class Trainer(object):
             flops_loader = create('{}Reader'.format(self.mode.capitalize()))(
                 self.dataset, self.cfg.worker_num, self._eval_batch_sampler)
             self._flops(flops_loader)
+        print("Evalutating...")
+        print("Infer Adapt:", self.model.transformer.decoder.infer_adapt)
+        cc = -1
+        mx = 100000
+        total_forward_time = 0
+        total_update_eval_time = 0
         for step_id, data in enumerate(loader):
+            cc += 1
+            if cc == mx:
+                break
             self.status['step_id'] = step_id
             self._compose_callback.on_step_begin(self.status)
             # forward
+            start_time = time.time()
             if self.use_amp:
                 with paddle.amp.auto_cast(
                         enable=self.cfg.use_gpu or self.cfg.use_npu or
@@ -727,11 +737,12 @@ class Trainer(object):
                     outs = self.model(data)
             else:
                 outs = self.model(data)
-
+            total_forward_time += time.time() - start_time
             # update metrics
+            start_time = time.time()
             for metric in self._metrics:
                 metric.update(data, outs)
-
+            total_update_eval_time += time.time() - start_time
             # multi-scale inputs: all inputs have same im_id
             if isinstance(data, typing.Sequence):
                 sample_num += data[0]['im_id'].numpy().shape[0]
@@ -741,15 +752,28 @@ class Trainer(object):
 
         self.status['sample_num'] = sample_num
         self.status['cost_time'] = time.time() - tic
-
+        start_time = time.time()
         # accumulate metric to log out
         for metric in self._metrics:
             metric.accumulate()
             metric.log()
+        total_update_eval_time += time.time() - start_time
         self._compose_callback.on_epoch_end(self.status)
         # reset metric states for metric may performed multiple times
         self._reset_metrics()
+        if self.model.transformer.decoder.infer_adapt:
+            n_call = int(self.model.transformer.decoder.n_call) 
+            n_query = float(self.model.transformer.decoder.n_query) 
+            n_last_query = int(self.model.transformer.decoder.n_last_query) 
 
+            print(f"N_call: {n_call:d}, sum_q: {n_query:.2f} \n"
+                f"n_last_query: {n_last_query:d} \n"
+                f"avg: {n_query / n_call:.2f} \n"
+                f"avg_last: {n_last_query / n_call:.2f}")
+        print("Forward time: ", total_forward_time, total_forward_time/5000)
+        print("Backbone time: ", self.model.backbone_time)
+        print("Other forward time: ", self.model.other_time)
+        print("Eval time: ", total_update_eval_time, total_update_eval_time/5000)
     def evaluate(self):
         # get distributed model
         if self.cfg.get('fleet', False):
@@ -781,10 +805,12 @@ class Trainer(object):
             self._flops(flops_loader)
 
         merged_bboxs = []
+        total_infer_time = 0
         for step_id, data in enumerate(loader):
             self.status['step_id'] = step_id
             self._compose_callback.on_step_begin(self.status)
             # forward
+            start_time = time.time()
             if self.use_amp:
                 with paddle.amp.auto_cast(
                         enable=self.cfg.use_gpu or self.cfg.use_npu or
@@ -795,7 +821,7 @@ class Trainer(object):
                     outs = self.model(data)
             else:
                 outs = self.model(data)
-
+            total_infer_time += time.time() - start_time
             shift_amount = data['st_pix']
             outs['bbox'][:, 2:4] = outs['bbox'][:, 2:4] + shift_amount
             outs['bbox'][:, 4:6] = outs['bbox'][:, 4:6] + shift_amount

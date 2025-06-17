@@ -201,13 +201,22 @@ class TransformerDecoderLayer(nn.Layer):
 
 
 class TransformerDecoder(nn.Layer):
-    def __init__(self, hidden_dim, decoder_layer, num_layers, eval_idx=-1):
+    def __init__(self, hidden_dim, decoder_layer, num_layers, eval_idx=-1, infer_adapt=True, offset=50, lag=40, alpha=1, beta=0.4, gamma=0.5):
         super(TransformerDecoder, self).__init__()
         self.layers = _get_clones(decoder_layer, num_layers)
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         self.eval_idx = eval_idx if eval_idx >= 0 else num_layers + eval_idx
-
+        self.infer_adapt = True
+        self.n_query = 0
+        self.n_call = 0
+        self.n_last_query = 0
+        self.infer_adapt = infer_adapt
+        self.offset=offset
+        self.lag = lag
+        self.alpha = alpha
+        self.beta = beta
+        self.gamma = gamma
     def forward(self,
                 tgt,
                 ref_points_unact,
@@ -221,18 +230,24 @@ class TransformerDecoder(nn.Layer):
                 memory_mask=None,
                 query_pos_head_inv_sig=False,
                 sub_seq_len=None):
-        if isinstance(sub_seq_len, list):
-            sub_seq_len = paddle.to_tensor(sub_seq_len, dtype='int64', place=target.place)
+        if self.infer_adapt:
+            if isinstance(sub_seq_len, list):
+                sub_seq_len = paddle.to_tensor(sub_seq_len, dtype='int64', place=target.place)
+        else:
+            sub_seq_len = None
         output = tgt
         dec_out_bboxes = []
         dec_out_logits = []
         ref_points_detach = F.sigmoid(ref_points_unact)
+        self.n_call += 1
         for i, layer in enumerate(self.layers):
-            sz = max(sub_seq_len)
-            sz = hash_v(sz)
-            sub_seq_o = sub_seq_len.clone()
-            ref_points_detach = ref_points_detach[:,:sz]
-            output = output[:,:sz]
+            if self.infer_adapt:
+                sz = max(sub_seq_len)
+                sz = hash_v(sz)
+                self.n_query += sz / len(self.layers)
+                sub_seq_o = sub_seq_len.clone()
+                ref_points_detach = ref_points_detach[:,:sz]
+                output = output[:,:sz]
             ref_points_input = ref_points_detach.unsqueeze(2)
 
             if not query_pos_head_inv_sig:
@@ -247,16 +262,20 @@ class TransformerDecoder(nn.Layer):
 
             inter_ref_bbox = F.sigmoid(bbox_head[i](output) + inverse_sigmoid(
                 ref_points_detach))
-            dec_out_logiti = score_head[i](output)
-            m_v = dec_out_logiti.max(-1)
-            sub_seq_len = get_k_tensor_constrained(m_v,offset=50, lag=40-i*8,sub_seq=sub_seq_len)
-            #sub_seq_len = [v.item() for v in sub_seq_len]
-            pass
-            if i == len(self.layers) - 1:
-                pass
+            if self.infer_adapt:
+                dec_out_logiti = score_head[i](output)
+                m_v = dec_out_logiti.max(-1)
+                sub_seq_len = get_k_tensor_constrained(m_v,offset=self.offset, lag=self.lag-int(i*self.lag/5),alpha=self.alpha, beta = self.beta, gamma=self.gamma, sub_seq=sub_seq_len)
+                #sub_seq_len = [v.item() for v in sub_seq_len]
+            
+                if i == len(self.layers) - 1:
+                    self.n_last_query += max(sub_seq_len)
+                    pass
+                else:
+                    #sub_seq_len = torch.tensor([min(sub_seq_len[i]+90, sub_seq_o[i]) for i in range(len(sub_seq_len))], device=tgt.device)
+                    sub_seq_len = paddle.minimum(sub_seq_len+self.offset+self.lag, sub_seq_o)
             else:
-                #sub_seq_len = torch.tensor([min(sub_seq_len[i]+90, sub_seq_o[i]) for i in range(len(sub_seq_len))], device=tgt.device)
-                sub_seq_len = paddle.minimum(sub_seq_len+90, sub_seq_o)
+                sub_seq_len = None
             if self.training:
                 dec_out_logits.append(score_head[i](output))
                 if i == 0:
@@ -308,7 +327,13 @@ class RTDETRTransformerv3(nn.Layer):
                  num_noise_denoising=100,
                  o2m_branch=False,
                  num_queries_o2m=450,
-                 eps=1e-2):
+                 eps=1e-2,
+                 infer_adapt=False,
+                 offset=50,
+                 lag=40,
+                 alpha=1.0,
+                 beta=0.4,
+                 gamma=0.4):
         super(RTDETRTransformerv3, self).__init__()
         assert position_embed_type in ['sine', 'learned'], \
             f'ValueError: position_embed_type not supported {position_embed_type}!'
@@ -317,6 +342,13 @@ class RTDETRTransformerv3(nn.Layer):
         assert len(num_noise_queries) == num_noises
         for _ in range(num_levels - len(feat_strides)):
             feat_strides.append(feat_strides[-1] * 2)
+
+        self.infer_adapt = infer_adapt
+        self.offset=offset
+        self.lag = lag
+        self.alpha = alpha
+        self.beta = beta
+        self.gamma = gamma
 
         self.hidden_dim = hidden_dim
         self.nhead = nhead
@@ -349,7 +381,7 @@ class RTDETRTransformerv3(nn.Layer):
             hidden_dim, nhead, dim_feedforward, dropout, activation, num_levels,
             num_decoder_points)
         self.decoder = TransformerDecoder(hidden_dim, decoder_layer,
-                                          num_decoder_layers, eval_idx)
+                                          num_decoder_layers, eval_idx,infer_adapt,offset,lag,alpha,beta,gamma)
 
         # denoising part
         self.denoising_class_embed = nn.Embedding(
@@ -531,10 +563,12 @@ class RTDETRTransformerv3(nn.Layer):
         target, init_ref_points_unact, enc_topk_bboxes, enc_topk_logits = \
             self._get_decoder_input(
                 memory, spatial_shapes, denoising_classes, denoising_bbox_unacts, is_teacher)
-        bs = target.shape[0]
-        q = target.shape[1]
-        sub_seq_len = paddle.full(shape=[bs], fill_value=q, dtype='int64')
-
+        if self.infer_adapt:
+            bs = target.shape[0]
+            q = target.shape[1]
+            sub_seq_len = paddle.full(shape=[bs], fill_value=q, dtype='int64')
+        else:
+            sub_seq_len = None
         # multi group noise attention
         if self.training:
             new_size = target.shape[1]
@@ -558,7 +592,7 @@ class RTDETRTransformerv3(nn.Layer):
                     new_attn_mask[begin: end, begin: end] = attn_masks[g_id]
                 begin = end
             attn_masks = new_attn_mask
-
+        
         # decoder
         out_bboxes, out_logits, sub_seq_len = self.decoder(
             target,

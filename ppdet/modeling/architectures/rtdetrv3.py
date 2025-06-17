@@ -19,7 +19,7 @@ from __future__ import print_function
 import paddle
 from .meta_arch import BaseArch
 from ppdet.core.workspace import register, create
-
+import time
 __all__ = ['RTDETRV3']
 # Deformable DETR, DINO use the same architecture as DETR
 
@@ -50,6 +50,8 @@ class RTDETRV3(BaseArch):
         self.with_mask = with_mask
         self.exclude_post_process = exclude_post_process
         self.post_process_semi = post_process_semi
+        self.backbone_time = 0
+        self.other_time = 0
 
     @classmethod
     def from_config(cls, cfg, *args, **kwargs):
@@ -84,8 +86,11 @@ class RTDETRV3(BaseArch):
 
     def _forward(self):
         # Backbone
-        body_feats = self.backbone(self.inputs)
+        start_time = time.time()
 
+        body_feats = self.backbone(self.inputs)
+        self.backbone_time += time.time() - start_time
+        start_time = time.time()
         # Neck
         if self.neck is not None:
             body_feats = self.neck(body_feats)
@@ -126,6 +131,7 @@ class RTDETRV3(BaseArch):
             output = {'bbox': bbox, 'bbox_num': bbox_num, 'sub_seq_len' : sub_seq_len}
             if self.with_mask:
                 output['mask'] = mask
+            self.other_time += time.time() - start_time
             return output
 
     def get_loss(self):

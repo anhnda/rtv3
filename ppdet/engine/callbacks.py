@@ -170,8 +170,8 @@ class LogPrinter(Callback):
             if mode == 'eval':
                 sample_num = status['sample_num']
                 cost_time = status['cost_time']
-                self.logger.info('Total sample number: {}, average FPS: {}'.format(
-                    sample_num, sample_num / cost_time))
+                # self.logger.info('Total sample number: {}, average FPS: {}'.format(
+                #     sample_num, sample_num / cost_time))
 
 
 class Checkpointer(Callback):
