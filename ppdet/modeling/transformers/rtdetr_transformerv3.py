@@ -572,6 +572,7 @@ class RTDETRTransformerv3(nn.Layer):
             bs = target.shape[0]
             q = target.shape[1]
             sub_seq_len = paddle.full(shape=[bs], fill_value=q, dtype='int64')
+            # Still missing ... get_k_tensor_constrained here 
         else:
             sub_seq_len = None
         # multi group noise attention
